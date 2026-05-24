@@ -98,7 +98,8 @@ class TestMemoryEntry:
         assert entry.contradicted_by is None
         assert entry.distilled_to is None
         assert isinstance(entry.created_at, float)
-        assert entry.updated_at == entry.created_at
+        # Both times set via default_factory=time.time, may differ by microseconds
+        assert abs(entry.updated_at - entry.created_at) < 0.01
         assert entry.access_count == 0
         assert entry.last_accessed is None
         assert entry.source_session_id is None

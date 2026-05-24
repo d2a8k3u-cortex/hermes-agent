@@ -20,6 +20,11 @@ import time
 from typing import Optional
 
 from agent.cognitive_memory.types import MemoryType, MemoryEntry, Provenance
+from agent.cognitive_memory.embeddings import (
+    is_available as _embeddings_available,
+    generate_embedding,
+    cosine_similarity,
+)
 
 SCHEMA_VERSION = 1
 
@@ -93,8 +98,13 @@ class CognitiveMemoryStore:
                 updated_at REAL NOT NULL,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 last_accessed REAL,
-                source_session_id TEXT
+                source_session_id TEXT,
+                embedding BLOB
             );
+
+            -- Index for faster cosine search (partial, embedding != NULL)
+            CREATE INDEX IF NOT EXISTS idx_memories_embedding
+                ON memories(id) WHERE embedding IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS memory_tags (
                 memory_id TEXT NOT NULL,
@@ -163,8 +173,8 @@ class CognitiveMemoryStore:
             INSERT INTO memories (
                 id, type, title, content, tags, confidence, provenance,
                 contradicted_by, distilled_to, created_at, updated_at,
-                access_count, last_accessed, source_session_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                access_count, last_accessed, source_session_id, embedding
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.id,
@@ -181,6 +191,7 @@ class CognitiveMemoryStore:
                 entry.access_count,
                 entry.last_accessed,
                 entry.source_session_id,
+                self._generate_embedding(entry.title, entry.content),
             ),
         )
         self._conn.commit()
@@ -205,7 +216,10 @@ class CognitiveMemoryStore:
         return _row_to_entry(row)
 
     def update(self, entry: MemoryEntry) -> None:
-        """Update an existing memory entry. Must have a valid ID."""
+        """Update an existing memory entry. Must have a valid ID.
+
+        Regenerates the embedding if title or content changed.
+        """
         entry.updated_at = time.time()
 
         self._conn.execute(
@@ -214,7 +228,7 @@ class CognitiveMemoryStore:
                 type = ?, title = ?, content = ?, tags = ?, confidence = ?,
                 provenance = ?, contradicted_by = ?, distilled_to = ?,
                 updated_at = ?, access_count = ?, last_accessed = ?,
-                source_session_id = ?
+                source_session_id = ?, embedding = ?
             WHERE id = ?
             """,
             (
@@ -230,6 +244,7 @@ class CognitiveMemoryStore:
                 entry.access_count,
                 entry.last_accessed,
                 entry.source_session_id,
+                self._generate_embedding(entry.title, entry.content),
                 entry.id,
             ),
         )
@@ -348,3 +363,100 @@ class CognitiveMemoryStore:
             "type_counts": type_counts,
             "schema_version": schema_version,
         }
+
+    # ── Embedding helpers ────────────────────────────────────────────────────
+
+    def _generate_embedding(self, title: str, content: str) -> Optional[bytes]:
+        """Generate an embedding for title+content and return as bytes blob.
+
+        Returns None if sentence-transformers is not available.
+        """
+        if not _embeddings_available():
+            return None
+        try:
+            text = f"{title}\n{content}"
+            vec = generate_embedding(text)
+            # Store as binary blob of 384 float32 values
+            import struct
+            return struct.pack(f"{len(vec)}f", *vec)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _blob_to_vector(blob: bytes) -> list[float]:
+        """Convert an embedding blob back to a list of floats."""
+        import struct
+        count = len(blob) // 4  # float32 = 4 bytes
+        return list(struct.unpack(f"{count}f", blob))
+
+    def _update_metadata_only(self, entry: MemoryEntry) -> None:
+        """Update access_count and last_accessed without regenerating embedding."""
+        self._conn.execute(
+            """UPDATE memories SET
+                updated_at = ?, access_count = ?, last_accessed = ?
+            WHERE id = ?""",
+            (time.time(), entry.access_count, entry.last_accessed, entry.id),
+        )
+        self._conn.commit()
+
+    # ── Cosine similarity search ─────────────────────────────────────────────
+
+    def cosine_search(
+        self,
+        query: str,
+        limit: int = 20,
+        type_filter: Optional[MemoryType] = None,
+    ) -> list[MemoryEntry]:
+        """Search by semantic similarity using embedding cosine distance.
+
+        Generates an embedding for the query, then scans all stored
+        embeddings for the closest matches. For small-to-medium stores
+        this manual scan is fast enough. For very large stores,
+        consider integrating sqlite-vec.
+
+        Args:
+            query: Natural language query to find similar memories for.
+            limit: Maximum results to return.
+            type_filter: Optional MemoryType to restrict results.
+
+        Returns:
+            List of MemoryEntry sorted by cosine similarity descending.
+            Each entry has _retrieval_score set to the cosine similarity.
+        """
+        query = query.strip()
+        if not query or not _embeddings_available():
+            return []
+
+        try:
+            query_vec = generate_embedding(query)
+        except Exception:
+            return []
+
+        # Get all entries with embeddings
+        if type_filter:
+            rows = self._conn.execute(
+                "SELECT * FROM memories WHERE type = ? AND embedding IS NOT NULL",
+                (_memory_type_to_str(type_filter),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM memories WHERE embedding IS NOT NULL"
+            ).fetchall()
+
+        if not rows:
+            return []
+
+        scored = []
+        for row in rows:
+            blob = row["embedding"]
+            if blob is None:
+                continue
+            entry_vec = self._blob_to_vector(blob)
+            score = cosine_similarity(query_vec, entry_vec)
+
+            entry = _row_to_entry(row)
+            entry._retrieval_score = score  # type: ignore[attr-defined]
+            scored.append(entry)
+
+        scored.sort(key=lambda e: e._retrieval_score, reverse=True)  # type: ignore[attr-defined]
+        return scored[:limit]
