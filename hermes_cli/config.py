@@ -1214,6 +1214,17 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Cognitive memory engine — EXPERIMENTAL. Machine-optimal memory with
+    # typed storage, hybrid search, ambient injection, compression, and
+    # automatic skills distillation. Default: off (existing file-based
+    # memory flow is unchanged). Set enabled=true to activate.
+    "cognitive_memory": {
+        "enabled": False,
+        "db_path": "",              # empty = auto (defaults to ~/.hermes/cognitive_memory.db)
+        "max_retrieved_per_turn": 6,
+        "embedding_model": "all-MiniLM-L6-v2",  # or "openai" for API-based
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

@@ -1142,6 +1142,43 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
+    # Cognitive memory engine — EXPERIMENTAL (opt-in via config).
+    # When enabled, initializes the typed memory store, dual-write adapter,
+    # and session context for ambient injection. Default: disabled.
+    agent._cognitive_enabled = False
+    agent._cognitive_store = None
+    agent._cognitive_adapter = None
+    agent._cognitive_session = None
+    if not skip_memory:
+        try:
+            cog_cfg = _agent_cfg.get("cognitive_memory", {})
+            if cog_cfg.get("enabled", False):
+                from agent.cognitive_memory.store import CognitiveMemoryStore
+                from agent.cognitive_memory.adapter import CognitiveMemoryAdapter
+                from agent.cognitive_memory.session import SessionContext
+
+                db_path = cog_cfg.get("db_path", "")
+                if not db_path:
+                    db_path = str(get_hermes_home() / "cognitive_memory.db")
+
+                agent._cognitive_store = CognitiveMemoryStore(db_path)
+                agent._cognitive_adapter = CognitiveMemoryAdapter(agent._cognitive_store)
+                agent._cognitive_session = SessionContext(session_id=agent.session_id)
+                agent._cognitive_max_retrieved = int(cog_cfg.get("max_retrieved_per_turn", 6))
+                agent._cognitive_enabled = True
+
+                # Wire dual-write adapter into existing MemoryStore
+                if agent._memory_store:
+                    agent._memory_store._cognitive_adapter = agent._cognitive_adapter
+
+                _ra().logger.info(
+                    "Cognitive memory engine enabled (db=%s, max_retrieved=%d)",
+                    db_path, agent._cognitive_max_retrieved,
+                )
+        except Exception as _cme:
+            _ra().logger.warning("Cognitive memory engine init failed: %s", _cme)
+            agent._cognitive_enabled = False
+
     # Inject memory provider tool schemas into the tool surface.
     # Skip tools whose names already exist (plugins may register the
     # same tools via ctx.register_tool(), which lands in agent.tools

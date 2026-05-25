@@ -460,5 +460,119 @@ def memory_command(args) -> None:
         cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "cognitive":
+        cmd_cognitive(args)
     else:
         cmd_status(args)
+
+
+def cmd_cognitive(args) -> None:
+    """Manage experimental cognitive memory engine.
+
+    Subcommands:
+      hermes memory cognitive enable   — activate cognitive memory
+      hermes memory cognitive disable  — deactivate cognitive memory
+      hermes memory cognitive status   — show current state + health
+    """
+    cog_sub = getattr(args, "cognitive_command", None)
+
+    if cog_sub == "enable":
+        _enable_cognitive()
+    elif cog_sub == "disable":
+        _disable_cognitive()
+    else:
+        _show_cognitive_status()
+
+
+def _enable_cognitive() -> None:
+    """Enable the cognitive memory engine in config.yaml."""
+    from .config import load_config, save_config
+    config = load_config()
+    config.setdefault("cognitive_memory", {})["enabled"] = True
+    save_config(config)
+    print("Cognitive memory engine ENABLED.")
+    print("")
+    print("This is an EXPERIMENTAL feature. It activates typed memory storage,")
+    print("hybrid search (BM25 + embeddings), ambient context injection,")
+    print("automatic compression, and skills distillation.")
+    print("")
+    print("The existing file-based memory (MEMORY.md / USER.md) is unchanged.")
+    print("Cognitive memory runs alongside it via dual-write.")
+    print("")
+    print("Set cognitive_memory.max_retrieved_per_turn in config.yaml to tune")
+    print("how many memories are injected per turn (default: 6).")
+
+
+def _disable_cognitive() -> None:
+    """Disable the cognitive memory engine in config.yaml."""
+    from .config import load_config, save_config
+    config = load_config()
+    config.setdefault("cognitive_memory", {})["enabled"] = False
+    save_config(config)
+    print("Cognitive memory engine DISABLED.")
+    print("")
+    print("Your cognitive memory database is preserved at:")
+    print("  ~/.hermes/cognitive_memory.db")
+    print("")
+    print("Re-enable with: hermes memory cognitive enable")
+
+
+def _show_cognitive_status() -> None:
+    """Display cognitive memory engine status and health."""
+    from hermes_cli.config import load_config
+    from hermes_constants import get_hermes_home
+
+    config = load_config()
+    cog_cfg = config.get("cognitive_memory", {})
+    enabled = cog_cfg.get("enabled", False)
+
+    print("Cognitive Memory Engine")
+    print("═" * 40)
+    print(f"  Status:   {'ENABLED' if enabled else 'DISABLED'} (EXPERIMENTAL)")
+    print(f"  DB path:  {cog_cfg.get('db_path', '') or str(get_hermes_home() / 'cognitive_memory.db')}")
+    print(f"  Max/turn: {cog_cfg.get('max_retrieved_per_turn', 6)}")
+    print(f"  Model:    {cog_cfg.get('embedding_model', 'all-MiniLM-L6-v2')}")
+    print("")
+
+    if enabled:
+        # Try to connect and show health
+        try:
+            db_path = cog_cfg.get("db_path", "")
+            if not db_path:
+                db_path = str(get_hermes_home() / "cognitive_memory.db")
+
+            if _fs_exists(db_path):
+                from agent.cognitive_memory.store import CognitiveMemoryStore
+                from agent.cognitive_memory.health import get_health_report
+
+                store = CognitiveMemoryStore(db_path)
+                try:
+                    health = get_health_report(store)
+                    print(f"  Memories:  {health['memory_count']} total "
+                          f"({health['type_counts']})")
+                    print(f"  Embedding: {health['embedding_coverage_pct']}% coverage")
+                    print(f"  Relations: {health['relation_count']}")
+                    print(f"  Health:    {health['health_score']:.0%}")
+
+                    if health["recommendations"]:
+                        print("")
+                        for rec in health["recommendations"]:
+                            print(f"  → {rec}")
+                finally:
+                    store.close()
+            else:
+                print("  No database yet — created on first agent run.")
+        except ImportError:
+            print("  (cognitive memory modules not importable —")
+            print("   sentence-transformers may need installation)")
+        except Exception as e:
+            print(f"  (could not read database: {e})")
+
+    print("")
+    print(f"Enable:  hermes memory cognitive enable")
+    print(f"Disable: hermes memory cognitive disable")
+
+
+def _fs_exists(path: str) -> bool:
+    import os
+    return os.path.exists(path)
