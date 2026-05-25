@@ -627,6 +627,22 @@ def run_conversation(
         except Exception:
             pass
 
+    # Cognitive memory engine: pre-turn context injection (EXPERIMENTAL)
+    _cognitive_context = ""
+    if agent._cognitive_enabled and agent._cognitive_store:
+        try:
+            from agent.cognitive_memory.injection import inject_memory_context, PerTurnDedupTracker, InjectionConfig
+
+            _query = original_user_message if isinstance(original_user_message, str) else ""
+            _cfg = InjectionConfig(max_total_per_turn=agent._cognitive_max_retrieved)
+            _tracker = agent._cognitive_session.dedup if agent._cognitive_session else PerTurnDedupTracker()
+
+            _cognitive_context = inject_memory_context(
+                agent._cognitive_store, _query, _tracker, config=_cfg
+            )
+        except Exception:
+            pass
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -800,6 +816,8 @@ def run_conversation(
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if _cognitive_context:
+                    _injections.append(_cognitive_context)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:

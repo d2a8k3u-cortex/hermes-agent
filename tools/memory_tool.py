@@ -153,6 +153,9 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Cognitive memory adapter (set by agent_init when cognitive_memory.enabled=true)
+        self._cognitive_enabled = False
+        self._cognitive_adapter = None
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
@@ -309,6 +312,13 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+            # Mirror to cognitive memory engine if enabled
+            if self._cognitive_adapter:
+                try:
+                    self._cognitive_adapter.mirror_add(target, content)
+                except Exception:
+                    pass
+
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -369,6 +379,13 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+            # Mirror to cognitive memory engine if enabled
+            if self._cognitive_adapter:
+                try:
+                    self._cognitive_adapter.mirror_replace(target, old_text, new_content)
+                except Exception:
+                    pass
+
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
@@ -404,6 +421,13 @@ class MemoryStore:
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+            # Mirror to cognitive memory engine if enabled
+            if self._cognitive_adapter:
+                try:
+                    self._cognitive_adapter.mirror_remove(target, old_text)
+                except Exception:
+                    pass
 
         return self._success_response(target, "Entry removed.")
 
