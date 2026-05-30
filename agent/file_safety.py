@@ -148,10 +148,24 @@ def is_write_denied(path: str) -> bool:
     return False
 
 
+# Common secret-bearing project-local environment file basenames.
+# These are blocked because .env files routinely contain API keys,
+# database passwords, and other credentials.
+_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".env.staging",
+    ".envrc",
+}
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Two categories are blocked:
+    Three categories are blocked:
 
       * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
@@ -163,6 +177,13 @@ def get_read_block_error(path: str) -> Optional[str]:
         OAuth tokens, and HMAC secrets that the agent never needs to read
         directly — provider tools / gateway adapters consume them through
         internal channels.
+      * Project-local environment files anywhere on disk: ``.env``,
+        ``.env.local``, ``.env.development``, ``.env.production``,
+        ``.env.test``, ``.env.staging``, ``.envrc``. These routinely hold
+        API keys, database passwords, and other credentials for the user's
+        own projects. The agent helping debug a project shouldn't normally
+        need to read these — ``.env.example`` is the documented-shape
+        substitute.
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
@@ -228,6 +249,10 @@ def get_read_block_error(path: str) -> Optional[str]:
         ".env",
         "webhook_subscriptions.json",
         os.path.join("auth", "google_oauth.json"),
+        # Bitwarden Secrets Manager disk cache: stores plaintext secret values
+        # to avoid re-fetching across back-to-back CLI invocations. The file
+        # was introduced by #31968 but not added to this guard.
+        os.path.join("cache", "bws_cache.json"),
     )
     for hd in hermes_dirs:
         for name in credential_file_names:
@@ -265,6 +290,19 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is a Hermes MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
+        )
+
+    # Block common secret-bearing project-local .env files anywhere on disk.
+    # The agent helping a user with their project rarely needs to read raw
+    # .env contents — .env.example is the documented-shape substitute. The
+    # terminal tool can still ``cat .env``; this is defense-in-depth, not a
+    # boundary (see module docstring).
+    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+        return (
+            f"Access denied: {path} is a secret-bearing environment file "
+            "and cannot be read to prevent credential leakage. "
+            "If you need to check the file structure, read .env.example instead. "
+            "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
         )
 
     return None
